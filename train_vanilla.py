@@ -1,0 +1,115 @@
+import numpy as np
+import os
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from functools import partial
+from tokenizers import Tokenizer
+from src.dataset import TinyShakespeareDataset
+from src.model import NanoGPT
+from src.utils import GPT2LRScheduler, collate_batch_fn
+from torch.utils.data import DataLoader, DistributedSampler
+from torch.optim import Adam
+from torchinfo import summary
+from tqdm import tqdm
+
+# Import DDP utilities
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+
+##############################################################################
+# DDP Training Logic
+###############################################################################
+
+def setup_distributed():
+    # Environment variables LOCAL_RANK, RANK, WORLD_SIZE are set by torchrun
+    dist.init_process_group(backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    return local_rank
+
+def cleanup():
+    dist.destroy_process_group()
+
+def train():
+    local_rank = setup_distributed()
+    is_main_process = (local_rank == 0)
+
+    # Hyperparameters
+    batch_size = 2
+    num_epochs = 15
+    tokenizer_path = "tokenizer.json"
+    
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    pad_token = tokenizer.token_to_id("<pad>")
+    vocab_size = tokenizer.get_vocab_size()
+
+    # Datasets
+    train_ds = TinyShakespeareDataset('train')
+    val_ds = TinyShakespeareDataset('val')
+    
+    # Distributed Samplers
+    train_sampler = DistributedSampler(train_ds, shuffle=True)
+    val_sampler = DistributedSampler(val_ds, shuffle=False)
+
+    collate_fn = partial(collate_batch_fn, pad_token=pad_token)
+    
+    train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, sampler=val_sampler, collate_fn=collate_fn)
+
+    model = NanoGPT(vocab_size=vocab_size).to(local_rank)
+    model = DDP(model, device_ids=[local_rank])
+
+    optim = Adam(model.parameters())
+    warmup_steps = len(train_loader) * num_epochs * 0.05
+    lr_scheduler = GPT2LRScheduler(optim, warmup_steps=warmup_steps)
+
+    if is_main_process:
+        print(summary(model, input_size=(batch_size, 1024), dtypes=[torch.long]))
+
+    for epoch in range(num_epochs):
+        # Mandatory for DistributedSampler to shuffle differently every epoch
+        train_sampler.set_epoch(epoch)
+        
+        model.train()
+        total_loss = 0.0
+        
+        # Only show progress bar on main process
+        pbar = tqdm(train_loader, disable=not is_main_process)
+        for x, y in pbar:
+            x, y = x.to(local_rank), y.to(local_rank)
+            
+            lr_scheduler.adjust_lr()
+            optim.zero_grad()
+            y_pred = model(x)
+            loss = F.cross_entropy(y_pred.transpose(1, 2), y)
+            loss.backward()
+            optim.step()
+            
+            total_loss += loss.item()
+            if is_main_process:
+                pbar.set_description(f"Epoch {epoch} Loss: {loss.item():.4f}")
+
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(local_rank), y.to(local_rank)
+                y_pred = model(x)
+                val_loss += F.cross_entropy(y_pred.transpose(1, 2), y).item()
+        
+        # Aggregate losses across all GPUs
+        avg_val_loss = torch.tensor(val_loss / len(val_loader)).to(local_rank)
+        dist.all_reduce(avg_val_loss, op=dist.ReduceOp.SUM)
+        avg_val_loss /= dist.get_world_size()
+
+        if is_main_process:
+            print(f"Epoch {epoch} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}")
+            torch.save(model.module.state_dict(), "weights.pt")
+
+    cleanup()
+
+if __name__ == "__main__":
+    train()
