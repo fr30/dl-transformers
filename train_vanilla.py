@@ -3,6 +3,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from functools import partial
 from tokenizers import Tokenizer
 from src.dataset import TinyShakespeareDataset
@@ -37,8 +38,8 @@ def train():
     is_main_process = (local_rank == 0)
 
     # Hyperparameters
-    batch_size = 2
-    num_epochs = 15
+    batch_size = 8
+    num_epochs = 5
     tokenizer_path = "tokenizer.json"
     
     tokenizer = Tokenizer.from_file(tokenizer_path)
@@ -66,7 +67,17 @@ def train():
     lr_scheduler = GPT2LRScheduler(optim, warmup_steps=warmup_steps)
 
     if is_main_process:
+        run = wandb.init(
+            project="llm_sandbox",
+            name="openwebtext_320kk",
+        )
+        os.makedirs("checkpoints", exist_ok=True)
         print(summary(model, input_size=(batch_size, 1024), dtypes=[torch.long]))
+
+    log_freq = 10_000
+    save_freq = 100_000
+    it = 0
+    avg_val_loss = torch.tensor([0.0])
 
     for epoch in range(num_epochs):
         # Mandatory for DistributedSampler to shuffle differently every epoch
@@ -88,26 +99,37 @@ def train():
             optim.step()
             
             total_loss += loss.item()
+
             if is_main_process:
-                pbar.set_description(f"Epoch {epoch} Loss: {loss.item():.4f}")
+                pbar.set_description(f"Step {it} Train Loss: {loss.item():.4f} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}")
+                
+                if it % save_freq == 0:
+                    torch.save(model.module.state_dict(), f"checkpoints/weights_step{it // 1000}k.pt")
 
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for x, y in val_loader:
-                x, y = x.to(local_rank), y.to(local_rank)
-                y_pred = model(x)
-                val_loss += F.cross_entropy(y_pred.transpose(1, 2), y).item()
-        
-        # Aggregate losses across all GPUs
-        avg_val_loss = torch.tensor(val_loss / len(val_loader)).to(local_rank)
-        dist.all_reduce(avg_val_loss, op=dist.ReduceOp.SUM)
-        avg_val_loss /= dist.get_world_size()
+            if it % log_freq == 0:
+                model.eval()
 
-        if is_main_process:
-            print(f"Epoch {epoch} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}")
-            torch.save(model.module.state_dict(), "weights.pt")
+                val_loss = 0.0
+                with torch.no_grad():
+                    for x, y in val_loader:
+                        x, y = x.to(local_rank), y.to(local_rank)
+                        y_pred = model(x)
+                        val_loss += F.cross_entropy(y_pred.transpose(1, 2), y).item()
+                
+                avg_val_loss = torch.tensor(val_loss / len(val_loader)).to(local_rank)
+                dist.all_reduce(avg_val_loss, op=dist.ReduceOp.SUM)
+                avg_val_loss /= dist.get_world_size()
+
+                model.train()
+                
+                if is_main_process:
+                    pbar.set_description(f"Step {it} Train Loss: {loss.item():.4f} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}")
+                    run.log({
+                        "Train loss (1k steps)": loss.item(),
+                        "Val loss (1k steps)": avg_val_loss.item(),
+                    })
+
+            it += 1
 
     cleanup()
 
