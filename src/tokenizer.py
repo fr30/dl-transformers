@@ -21,7 +21,7 @@ def preprocess_tinyshakespare(tokenizer_path="tokenizers/shakespeare_tokenizer.j
     tokenizer_save_path = "shakespeare_tokenizer.json"
     dset_name = "tinyshakespeare"
     raw_ds = load_dataset("Trelis/tiny-shakespeare")
-    
+
     ds_iter = (elem["Text"] for elem in raw_ds["train"])
     train_tokenizer(ds_iter, tokenizer_save_path)
 
@@ -69,7 +69,7 @@ def preprocess_openwebtext(tokenizer_path="tokenizers/openwebtext_tokenizer.json
     tokenizer_save_path = "openwebtext_tokenizer.json"
     dset_name = "openwebtext"
     raw_ds = load_dataset("openwebtext", num_proc=16)
-    tokenizer_train_size = int(len(raw_ds["train"]) * 0.1)
+    tokenizer_train_size = int(len(raw_ds["train"]) * 0.001)
 
     ds_iter = (raw_ds["train"][i]["text"] for i in range(tokenizer_train_size))
     train_tokenizer(ds_iter, tokenizer_save_path)
@@ -169,7 +169,7 @@ def _build_one_split(
 ):
     tokenizer_name = tokenizer_path.split("/")[-1].split(".")[0]
     out_tokens_path = f"data/{dset_name}/{tokenizer_name}_{split}_tokens.bin"
-    out_offsets_path = f"data/{dset_name}/{tokenizer_name}_{split}_offsets.npy" # Switched to npy for simplicity
+    out_offsets_path = f"data/{dset_name}/{tokenizer_name}_{split}_offsets.npy"  # Switched to npy for simplicity
 
     if os.path.exists(out_tokens_path):
         print(f"{split} already exists. Skipping.")
@@ -179,23 +179,31 @@ def _build_one_split(
 
     # We use an array.array or numpy array to store offsets efficiently
     # Initializing with 0 for the first offset
-    offsets = [0] 
-    
+    offsets = [0]
+
     # Open file in binary append mode
     with open(out_tokens_path, "wb") as f:
-        with ProcessPoolExecutor(max_workers=max_workers, initializer=_init_worker, initargs=(tokenizer_path,)) as ex:
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_init_worker,
+            initargs=(tokenizer_path,),
+        ) as ex:
             # Note: we only do ONE map operation now
-            texts = (text for text in dset_factory()) # removed regex for speed; add back if vital
+            texts = (
+                text for text in dset_factory()
+            )  # removed regex for speed; add back if vital
             it = ex.map(_tokenize_only_ids, texts, chunksize=chunksize)
-            
+
             current_total = 0
             for ids in tqdm(it, total=dset_len, desc=f"Writing {split}"):
                 # Truncate to max_seq_len
-                tokens = np.array(ids[:max_seq_len], dtype=np.uint16) # uint16 if vocab < 65k
-                
+                tokens = np.array(
+                    ids[:max_seq_len], dtype=np.uint16
+                )  # uint16 if vocab < 65k
+
                 # Write directly to disk
                 f.write(tokens.tobytes())
-                
+
                 # Update metadata
                 n_tokens = len(tokens)
                 current_total += n_tokens
@@ -205,8 +213,10 @@ def _build_one_split(
     np.save(out_offsets_path, np.array(offsets, dtype=np.uint64))
     print(f"Saved {current_total} tokens to {out_tokens_path}")
 
+
 def _tokenize_only_ids(text):
     import re
+
     text = re.sub(r"\n+", "\n", text)
     return _WORKER_TOKENIZER.encode(text).ids
 
