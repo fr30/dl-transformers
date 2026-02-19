@@ -21,7 +21,7 @@ def preprocess_tinyshakespare(tokenizer_path="tokenizers/shakespeare_tokenizer.j
     tokenizer_save_path = "shakespeare_tokenizer.json"
     dset_name = "tinyshakespeare"
     raw_ds = load_dataset("Trelis/tiny-shakespeare")
-
+    
     ds_iter = (elem["Text"] for elem in raw_ds["train"])
     train_tokenizer(ds_iter, tokenizer_save_path)
 
@@ -69,8 +69,9 @@ def preprocess_openwebtext(tokenizer_path="tokenizers/openwebtext_tokenizer.json
     tokenizer_save_path = "openwebtext_tokenizer.json"
     dset_name = "openwebtext"
     raw_ds = load_dataset("openwebtext", num_proc=16)
+    tokenizer_train_size = int(len(raw_ds["train"]) * 0.1)
 
-    ds_iter = (elem["text"] for elem in raw_ds["train"])
+    ds_iter = (raw_ds["train"][i]["text"] for i in range(tokenizer_train_size))
     train_tokenizer(ds_iter, tokenizer_save_path)
 
     train_ds = raw_ds["train"]
