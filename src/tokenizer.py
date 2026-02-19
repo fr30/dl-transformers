@@ -68,23 +68,20 @@ def preprocess_tinystories(tokenizer_path="tokenizers/tinystories_tokenizer.json
 def preprocess_openwebtext(tokenizer_path="tokenizers/openwebtext_tokenizer.json"):
     tokenizer_save_path = "openwebtext_tokenizer.json"
     dset_name = "openwebtext"
-    raw_ds = load_dataset("Skylion007/openwebtext")
+    raw_ds = load_dataset("openwebtext", num_proc=16)
 
     ds_iter = (elem["text"] for elem in raw_ds["train"])
     train_tokenizer(ds_iter, tokenizer_save_path)
 
     train_ds = raw_ds["train"]
-    train_ds, val_ds = _split_dataset_sequential(train_ds, 0.98)
-    val_ds, test_ds = _split_dataset_sequential(val_ds, 0.5)
+    train_ds, val_ds = _split_dataset_sequential(train_ds, 0.9995)
 
     train_factory = lambda: (elem["text"] for elem in train_ds)
     val_factory = lambda: (elem["text"] for elem in val_ds)
-    test_factory = lambda: (elem["text"] for elem in test_ds)
 
     dsets = [
         ("train", train_factory, len(train_ds)),
         ("val", val_factory, len(val_ds)),
-        ("test", test_factory, len(test_ds)),
     ]
 
     _tokenize_datasets(dset_name, dsets, tokenizer_path)
@@ -208,17 +205,11 @@ def _build_one_split(
     print(f"Saved {current_total} tokens to {out_tokens_path}")
 
 def _tokenize_only_ids(text):
-    # Move regex inside the worker to keep the main process lean
     import re
     text = re.sub(r"\n+", "\n", text)
     return _WORKER_TOKENIZER.encode(text).ids
-    # return _WORKER_TOKENIZER.encode(text).ids
 
 
 def _init_worker(tokenizer_path: str):
     global _WORKER_TOKENIZER
     _WORKER_TOKENIZER = Tokenizer.from_file(tokenizer_path)
-
-def _create_mapped_tensor(path, num_elements, dtype='int64'):
-    mmap = np.memmap(path, dtype=dtype, mode='w+', shape=(num_elements,))
-    return torch.from_numpy(mmap)
