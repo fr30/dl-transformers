@@ -39,7 +39,7 @@ def train():
 
     # Hyperparameters
     batch_size = 8
-    num_epochs = 5
+    num_epochs = 10
     tokenizer_path = "tokenizer.json"
     
     tokenizer = Tokenizer.from_file(tokenizer_path)
@@ -59,7 +59,7 @@ def train():
     train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler, collate_fn=collate_fn)
     val_loader = DataLoader(val_ds, batch_size=batch_size, sampler=val_sampler, collate_fn=collate_fn)
 
-    model = NanoGPT(vocab_size=vocab_size).to(local_rank)
+    model = NanoGPT(vocab_size=vocab_size, attn_type="flash").to(local_rank).to(torch.bfloat16)
     model = DDP(model, device_ids=[local_rank])
 
     optim = Adam(model.parameters())
@@ -93,7 +93,7 @@ def train():
             
             lr_scheduler.adjust_lr()
             optim.zero_grad()
-            y_pred = model(x)
+            y_pred = model(x).to(torch.float32)
             loss = F.cross_entropy(y_pred.transpose(1, 2), y)
             loss.backward()
             optim.step()
