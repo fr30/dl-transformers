@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import wandb
 from functools import partial
 from tokenizers import Tokenizer
-from src.dataset import TinyShakespeareDataset
+from src.dataset import OpenWebTextDataset
 from src.model import NanoGPT
 from src.utils import GPT2LRScheduler, collate_batch_fn
 from torch.utils.data import DataLoader, DistributedSampler
@@ -38,17 +38,17 @@ def train():
     is_main_process = (local_rank == 0)
 
     # Hyperparameters
-    batch_size = 8
-    num_epochs = 10
-    tokenizer_path = "tokenizer.json"
+    batch_size = 52
+    num_epochs = 1
+    tokenizer_path = "tokenizers/openwebtext_tokenizer.json"
     
     tokenizer = Tokenizer.from_file(tokenizer_path)
     pad_token = tokenizer.token_to_id("<pad>")
     vocab_size = tokenizer.get_vocab_size()
 
     # Datasets
-    train_ds = TinyShakespeareDataset('train')
-    val_ds = TinyShakespeareDataset('val')
+    train_ds = OpenWebTextDataset('train')
+    val_ds = OpenWebTextDataset('val')
     
     # Distributed Samplers
     train_sampler = DistributedSampler(train_ds, shuffle=True)
@@ -59,7 +59,7 @@ def train():
     train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler, collate_fn=collate_fn)
     val_loader = DataLoader(val_ds, batch_size=batch_size, sampler=val_sampler, collate_fn=collate_fn)
 
-    model = NanoGPT(vocab_size=vocab_size, attn_type="flash").to(local_rank).to(torch.bfloat16)
+    model = NanoGPT(vocab_size=vocab_size, tokenizer_path=tokenizer_path, attn_type="flash").to(local_rank).to(torch.bfloat16)
     model = DDP(model, device_ids=[local_rank])
 
     optim = Adam(model.parameters())
@@ -74,8 +74,8 @@ def train():
         os.makedirs("checkpoints", exist_ok=True)
         print(summary(model, input_size=(batch_size, 1024), dtypes=[torch.long]))
 
-    log_freq = 10_000
-    save_freq = 100_000
+    log_freq = 100
+    save_freq = 5000
     it = 0
     avg_val_loss = torch.tensor([0.0])
 
@@ -104,7 +104,7 @@ def train():
                 pbar.set_description(f"Step {it} Train Loss: {loss.item():.4f} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}")
                 
                 if it % save_freq == 0:
-                    torch.save(model.module.state_dict(), f"checkpoints/weights_step{it // 1000}k.pt")
+                    torch.save(model.module.state_dict(), f"checkpoints/weights_step{it}k.pt")
 
             if it % log_freq == 0:
                 model.eval()

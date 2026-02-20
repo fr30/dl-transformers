@@ -65,11 +65,11 @@ def preprocess_tinystories(tokenizer_path="tokenizers/tinystories_tokenizer.json
     _tokenize_datasets(dset_name, dsets, tokenizer_path)
 
 
-def preprocess_openwebtext(tokenizer_path="tokenizers/openwebtext_tokenizer.json"):
-    tokenizer_save_path = "openwebtext_tokenizer.json"
+def preprocess_openwebtext(tokenizer_path="tokenizers/openwebtext16k_tokenizer.json"):
+    tokenizer_save_path = "openwebtext16k_tokenizer.json"
     dset_name = "openwebtext"
     raw_ds = load_dataset("openwebtext", num_proc=16)
-    tokenizer_train_size = int(len(raw_ds["train"]) * 0.001)
+    tokenizer_train_size = int(len(raw_ds["train"]) * 0.01)
 
     ds_iter = (raw_ds["train"][i]["text"] for i in range(tokenizer_train_size))
     train_tokenizer(ds_iter, tokenizer_save_path)
@@ -101,8 +101,8 @@ def train_tokenizer(ds_iter, tokenizer_path):
     tokenizer.normalizer = NFKC()
     tokenizer.pre_tokenizer = ByteLevel(add_prefix_space=False)
 
-    vocab_size = 8124
-    min_frequency = 2
+    vocab_size = 16384
+    min_frequency = 10
     special_tokens = ["<pad>", "<bos>", "<eos>", "<unk>"]
 
     trainer = BpeTrainer(
