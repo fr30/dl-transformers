@@ -108,9 +108,7 @@ def train():
         optim.zero_grad(set_to_none=True)
 
         model.train()
-        total_loss = 0.0
 
-        # Only show progress bar on main process
         pbar = tqdm(train_loader, disable=not is_main_process)
         for i, (x, y) in enumerate(pbar):
             should_update_model = (i + 1) % grad_acc_steps == 0
@@ -119,7 +117,7 @@ def train():
             x, y = x.to(local_rank), y.to(local_rank)
 
             y_pred = model(x).to(torch.float32)
-            loss = F.cross_entropy(y_pred.transpose(1, 2), y) * grad_acc_steps
+            loss = F.cross_entropy(y_pred.transpose(1, 2), y) / grad_acc_steps
             loss.backward()
 
             if not should_update_model:
@@ -129,8 +127,6 @@ def train():
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optim.step()
             optim.zero_grad(set_to_none=True)
-
-            total_loss += loss.item() / grad_acc_steps
 
             if is_main_process:
                 pbar.set_description(
