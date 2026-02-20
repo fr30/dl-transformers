@@ -41,7 +41,6 @@ def train():
     local_rank = setup_distributed()
     is_main_process = local_rank == 0
 
-    # Hyperparameters
     batch_size = 48
     num_epochs = 1
     tokenizer_path = "tokenizers/openwebtext16k_tokenizer.json"
@@ -50,11 +49,9 @@ def train():
     pad_token = tokenizer.token_to_id("<pad>")
     vocab_size = tokenizer.get_vocab_size()
 
-    # Datasets
     train_ds = OpenWebTextDataset("train")
     val_ds = OpenWebTextDataset("val")
 
-    # Distributed Samplers
     train_sampler = DistributedSampler(train_ds, shuffle=True)
     val_sampler = DistributedSampler(val_ds, shuffle=False)
 
@@ -85,8 +82,11 @@ def train():
         weight_decay=0.1,
         eps=1e-10,
     )
-    warmup_steps = len(train_loader) * num_epochs * 0.05
-    lr_scheduler = GPT2LRScheduler(optim, warmup_steps=warmup_steps)
+    total_steps = len(train_loader) * num_epochs
+    warmup_steps = total_steps * 0.05
+    lr_scheduler = GPT2LRScheduler(
+        optim, warmup_steps=warmup_steps, total_steps=total_steps
+    )
 
     if is_main_process:
         run = wandb.init(
@@ -96,14 +96,13 @@ def train():
         os.makedirs("checkpoints", exist_ok=True)
         print(summary(model, input_size=(batch_size, 1024), dtypes=[torch.long]))
 
-    log_freq = 100
     step = 0
-    grad_acc_steps = math.ceil(512 / (batch_size * int(os.environ["WORLD_SIZE"])))
+    grad_acc_steps = max(1, 512 // (batch_size * int(os.environ["WORLD_SIZE"])))
+    log_freq = 100 // grad_acc_steps
     avg_val_loss = torch.tensor([0.0])
     best_val_loss = np.inf
 
     for epoch in range(num_epochs):
-        # Mandatory for DistributedSampler to shuffle differently every epoch
         train_sampler.set_epoch(epoch)
         optim.zero_grad(set_to_none=True)
 
@@ -129,8 +128,9 @@ def train():
             optim.zero_grad(set_to_none=True)
 
             if is_main_process:
+                actual_train_loss = loss.item() * grad_acc_steps
                 pbar.set_description(
-                    f"Step {step} Train Loss: {loss.item():.4f} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}"
+                    f"Step {step} Train Loss: {actual_train_loss:.4f} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}"
                 )
 
             if step % log_freq == 0:
@@ -150,15 +150,15 @@ def train():
                 model.train()
 
                 if is_main_process:
-                    report_loss = loss.item() * grad_acc_steps
                     pbar.set_description(
-                        f"Step {step} Train Loss: {report_loss:.4f} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}"
+                        f"Step {step} Train Loss: {actual_train_loss:.4f} | Val Loss: {avg_val_loss.item():.4f} | PPL: {np.exp(avg_val_loss.item()):.2f}"
                     )
                     run.log(
                         {
-                            "Train loss": report_loss,
+                            "Train loss": actual_train_loss,
                             "Val loss": avg_val_loss.item(),
                             "Grad norm": grad_norm.item(),
+                            "LR": lr_scheduler.lr,
                         }
                     )
 
