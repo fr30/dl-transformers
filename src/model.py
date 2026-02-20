@@ -34,7 +34,7 @@ class RMSNorm(nn.Module):
     def forward(self, x):
         in_dtype = x.dtype
         x = x.to(torch.float32)
-        rms = torch.sqrt(torch.mean(x.pow(2)) + self.eps)
+        rms = torch.sqrt(torch.mean(x.pow(2), dim=-1, keepdim=True) + self.eps)
         x = (x / rms) * self.g
         return x.to(in_dtype)
 
@@ -44,9 +44,6 @@ class CausalSelfAttentionBlock(nn.Module):
         self, input_dim, emb_dim=512, max_seq_len=1050, n_heads=8, p_dropout=0.1
     ):
         super().__init__()
-        # self.Wq = nn.Linear(input_dim, emb_dim, bias=True)
-        # self.Wk = nn.Linear(input_dim, emb_dim, bias=True)
-        # self.Wv = nn.Linear(input_dim, emb_dim, bias=True)
         self.W = nn.Linear(input_dim, emb_dim * 3, bias=True)
         self.Wo = nn.Linear(emb_dim, emb_dim)
         self.ff = FFLayer(emb_dim)
@@ -80,12 +77,6 @@ class CausalSelfAttentionBlock(nn.Module):
         s = e // self.n_heads
         dtype = x.dtype
 
-        # x = self.ln_mha(x)
-        # q, k, v = self.Wq(x), self.Wk(x), self.Wv(x)
-        # q = q.view(b, t, self.n_heads, s).transpose(1, 2)
-        # k = k.view(b, t, self.n_heads, s).transpose(1, 2)
-        # v = v.view(b, t, self.n_heads, s).transpose(1, 2)
-
         x = self.ln_mha(x)
         qkv = self.W(x)
         qkv = qkv.view(b, t, self.n_heads, 3 * s)
@@ -108,21 +99,16 @@ class CausalSelfAttentionBlock(nn.Module):
 
 
 class FlashSelfAttentionBlock(nn.Module):
-    def __init__(
-        self, input_dim, emb_dim=512, max_seq_len=1050, n_heads=8, p_dropout=0.1
-    ):
+    def __init__(self, input_dim, emb_dim=512, n_heads=8, p_dropout=0.1):
         super().__init__()
         self.W = nn.Linear(input_dim, emb_dim * 3, bias=True)
         self.Wo = nn.Linear(emb_dim, emb_dim)
         self.ff = FFLayer(emb_dim)
         self.ln_mha = RMSNorm(emb_dim)
         self.ln_ff = RMSNorm(emb_dim)
-        self.scale = 1 / np.sqrt(emb_dim)
         self.emb_dim = emb_dim
         self.n_heads = n_heads
         self.p_dropout = p_dropout
-        attn_mask = torch.tril(torch.ones(max_seq_len, max_seq_len)) == 0
-        self.register_buffer("_causal_mask", attn_mask)
 
     def forward(self, x):
         y = self.mha(x)
@@ -149,7 +135,8 @@ class FlashSelfAttentionBlock(nn.Module):
 
         qkv = qkv.view(b, t, self.n_heads, 3, s)
         qkv = qkv.transpose(2, 3)
-        y = flash_attn_qkvpacked_func(qkv, dropout_p=self.p_dropout)
+        y = flash_attn_qkvpacked_func(qkv, dropout_p=self.p_dropout, causal=True)
+
         y = y.reshape(b, t, e)
         y = self.Wo(y)
         y = F.dropout(y, p=self.p_dropout)
@@ -160,7 +147,7 @@ class FlashSelfAttentionBlock(nn.Module):
 class NanoGPT(nn.Module):
     def __init__(
         self,
-        vocab_size=8124,
+        vocab_size=16384,
         emb_dim=1024,
         attn_blocks=24,
         max_seq_len=1024,
@@ -184,9 +171,7 @@ class NanoGPT(nn.Module):
         elif attn_type == "flash":
             self.attn = self.attn = nn.Sequential(
                 *[
-                    FlashSelfAttentionBlock(
-                        emb_dim, emb_dim, max_seq_len, n_heads, p_dropout
-                    )
+                    FlashSelfAttentionBlock(emb_dim, emb_dim, n_heads, p_dropout)
                     for _ in range(attn_blocks)
                 ]
             )
