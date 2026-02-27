@@ -113,10 +113,13 @@ def train():
             should_update_model = (i + 1) % grad_acc_steps == 0
             model.require_backward_grad_sync = should_update_model
 
-            x, y = x.to(local_rank), y.to(local_rank)
+            x = x.to(local_rank, non_blocking=True)
+            y = y.to(local_rank, non_blocking=True)
 
-            y_pred = model(x).to(torch.float32)
-            loss = F.cross_entropy(y_pred.transpose(1, 2), y) / grad_acc_steps
+            y_pred = model(x)
+            y_pred = y_pred.view(-1, y_pred.size(-1)).to(torch.float32)
+            loss = F.cross_entropy(y_pred, y.view(-1)) / grad_acc_steps
+
             loss.backward()
 
             if not should_update_model:
