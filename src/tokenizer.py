@@ -127,14 +127,19 @@ def train_tokenizer(ds_iter, tokenizer_path):
     print(f"Vocab size: {tokenizer.get_vocab_size()}")
 
 
-def _split_dataset_sequential(dataset, ratio):
+def _split_dataset_sequential(dataset, ratio, seed=42):
     n_total = len(dataset)
     n_first = int(n_total * ratio)
 
-    indices = range(n_total)
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+
+    train_indices = indices[:n_first]
+    val_indices = indices[n_first:]
+
     return (
-        torch.utils.data.Subset(dataset, indices[:n_first]),
-        torch.utils.data.Subset(dataset, indices[n_first:]),
+        torch.utils.data.Subset(dataset, train_indices),
+        torch.utils.data.Subset(dataset, val_indices),
     )
 
 
@@ -177,11 +182,8 @@ def _build_one_split(
 
     print(f"Processing {dset_name} {split} in a single pass...")
 
-    # We use an array.array or numpy array to store offsets efficiently
-    # Initializing with 0 for the first offset
     offsets = [0]
 
-    # Open file in binary append mode
     with open(out_tokens_path, "wb") as f:
         with ProcessPoolExecutor(
             max_workers=max_workers,
